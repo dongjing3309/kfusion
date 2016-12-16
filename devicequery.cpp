@@ -147,6 +147,7 @@ main( int argc, char** argv)
         shrLog("  GPU Clock Speed:                               %.2f GHz\n", deviceProp.clockRate * 1e-6f);
     #if CUDART_VERSION >= 4000
 	// This is not available in the CUDA Runtime API, so we make the necessary calls the driver API to support this for output
+        /*
         int memoryClock;
         getCudaAttribute<int>( &memoryClock, CU_DEVICE_ATTRIBUTE_MEMORY_CLOCK_RATE, dev );
         shrLog("  Memory Clock rate:                             %.2f Mhz\n", memoryClock * 1e-3f);
@@ -158,7 +159,7 @@ main( int argc, char** argv)
         if (L2CacheSize) {
             shrLog("  L2 Cache Size:                                 %d bytes\n", L2CacheSize);
         }
-
+*/
         shrLog("  Max Texture Dimension Size (x,y,z)             1D=(%d), 2D=(%d,%d), 3D=(%d,%d,%d)\n",
                                                         deviceProp.maxTexture1D, deviceProp.maxTexture2D[0], deviceProp.maxTexture2D[1],
                                                         deviceProp.maxTexture3D[0], deviceProp.maxTexture3D[1], deviceProp.maxTexture3D[2]);

@@ -51,7 +51,7 @@ if (GLUT_FOUND)
         add_executable(kfusion_kinect
             kinect.cpp interface.h interface.cpp
             )
-        target_link_libraries(kfusion_kinect kfusion ${GLUT_LIBRARIES} ${OPENGL_LIBRARIES} ${FREENECT_LIBRARIES}) 
+        target_link_libraries(kfusion_kinect kfusion pthread ${GLUT_LIBRARIES} ${OPENGL_LIBRARIES} ${FREENECT_LIBRARIES}) 
     else()
         include_directories($ENV{KINECTSDK10_DIR}/inc)
         add_definitions(-DMS_KINECT_INTERFACE)

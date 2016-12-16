@@ -226,7 +226,7 @@ void CloseKinect(){
 // This implementation uses the libfreenect library and pthreads for threading
 #elif defined(LIBFREENECT_INTERFACE)
 
-#include <libfreenect/libfreenect.h>
+#include <libfreenect.h>
 #include <pthread.h>
 #include <iostream>
 
