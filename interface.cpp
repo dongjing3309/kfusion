@@ -26,6 +26,9 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 // The returned depth buffers are mapped to the color buffer and store the
 // depth at each pixel in mm. 0 marks an invalid pixel.
 
+#define LIBFREENECT_INTERFACE
+#undef MS_KINECT_INTERFACE
+
 // This implementation uses the MS Kinect SDK, tested with version 1.6
 #ifdef MS_KINECT_INTERFACE
 

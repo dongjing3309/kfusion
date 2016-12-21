@@ -25,7 +25,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 #include "kfusion.h"
 #include "helpers.h"
-#include "interface.h"
+//#include "interface.h"
 #include "perfstats.h"
 
 #include <iostream>
@@ -46,7 +46,9 @@ using namespace TooN;
 
 KFusion kfusion;
 Image<uchar4, HostDevice> lightScene, trackModel, lightModel, texModel;
-Image<uint16_t, HostDevice> depthImage[2];
+
+// no need for double buffer for offline mode
+Image<uint16_t, HostDevice> depthImage;
 Image<uchar3, HostDevice> rgbImage;
 
 const float3 light = make_float3(1, 1, -1.0);
@@ -66,7 +68,71 @@ Image<float, Device> dep;
 SE3<float> preTrans, trans, rot(makeVector(0.0, 0, 0, 0, 0, 0));
 bool redraw_big_view = false;
 
+
+// ros bag
+const string rgb_img_topic = "/camera/rgb/image_color";
+const string depth_img_topic = "/camera/depth/image_raw";
+rosbag::View *ptr_bag_filtered;
+rosbag::View::const_iterator iter_bag_frame;
+// flag of buffered depth frame has been processed
+bool depth_buffer_processed;
+
+
+void idle(void){
+
+  if (depth_buffer_processed) {
+
+    // check wether iter reach the end
+    if (iter_bag_frame != ptr_bag_filtered->end()) {
+      const rosbag::MessageInstance& message = *iter_bag_frame;
+      sensor_msgs::Image::ConstPtr img_ptr = message.instantiate<sensor_msgs::Image>();
+      if (img_ptr != NULL) {
+
+        if (message.getTopic() == depth_img_topic) {
+          // depth image
+          cout << "in depth frame" << endl;
+          // check image property 640 x 480 x uchar16 x 1
+          if (img_ptr->width == 640 && img_ptr->height == 480 &&
+              img_ptr->step == 1280) {
+
+            memcpy(depthImage.data(), &img_ptr->data[0], img_ptr->step*img_ptr->height);
+
+            depth_buffer_processed = false;
+            // rerun display func (do fusion)
+            glutPostRedisplay();
+          } else {
+            cout << "[ERROR] depth image format wrong" << endl;
+          }
+
+        } else if (message.getTopic() == rgb_img_topic) {
+          // rgb image
+          cout << "in color frame" << endl;
+          // check image property 640 x 480 x uchar8 x 3
+          if (img_ptr->width == 640 && img_ptr->height == 480 &&
+              img_ptr->step == 1920) {
+
+            memcpy(rgbImage.data(), &img_ptr->data[0], img_ptr->step*img_ptr->height);
+
+          } else {
+            cout << "[ERROR] depth image format wrong" << endl;
+          }
+
+        } else {
+          //cout << "[ERROR] cannot identify Image topic type" << endl;
+        }
+
+      } else {
+        //cout << "[ERROR] cannot find message type" << endl;
+      }
+      iter_bag_frame++;
+    }
+
+  }
+}
+
+
 void display(void){
+  cout << "in" << endl;
   const uint2 imageSize = kfusion.configuration.inputSize;
   static bool integrate = true;
 
@@ -74,7 +140,7 @@ void display(void){
   const double startFrame = Stats.start();
   const double startProcessing = Stats.sample("kinect");
 
-  kfusion.setKinectDeviceDepth(depthImage[GetKinectFrame()].getDeviceImage());
+  kfusion.setKinectDeviceDepth(depthImage.getDeviceImage());
   Stats.sample("raw to cooked");
 
   integrate = kfusion.Track();
@@ -135,13 +201,13 @@ void display(void){
     cout << endl;
   }
 
+  // processed frame
+  depth_buffer_processed = true;
+
   glutSwapBuffers();
+  cout << "out" << endl;
 }
 
-void idle(void){
-  if(KinectFrameAvailable())
-    glutPostRedisplay();
-}
 
 void keys(unsigned char key, int x, int y){
   switch(key){
@@ -193,7 +259,8 @@ void reshape(int width, int height){
 }
 
 void exitFunc(void){
-  CloseKinect();
+  delete ptr_bag_filtered;
+  //CloseKinect();
   kfusion.Clear();
   cudaDeviceReset();
 }
@@ -201,8 +268,7 @@ void exitFunc(void){
 int main(int argc, char ** argv) {
 
   // load and filter rosbag file by topics
-  const string bagfile_name;
-  const string rgb_img_topic, depth_img_topic;
+  const string bagfile_name = "/home/jing/data/kinect/2016-12-20-23-00-19_0.bag";
 
   rosbag::Bag bag;
   bag.open(bagfile_name, rosbag::bagmode::Read);
@@ -211,7 +277,13 @@ int main(int argc, char ** argv) {
   topics.push_back(rgb_img_topic);
   topics.push_back(depth_img_topic);
 
-  rosbag::View bag_filtered(bag, rosbag::TopicQuery(topics));
+  ptr_bag_filtered = new rosbag::View(bag, rosbag::TopicQuery(topics));
+
+  // iterator to first frame
+  iter_bag_frame = ptr_bag_filtered->begin();
+
+  // set true let view feeds in first frame
+  depth_buffer_processed = true;
 
   // volume size
   const float size = (argc > 1) ? atof(argv[1]) : 2.f;
@@ -255,8 +327,7 @@ int main(int argc, char ** argv) {
   kfusion.Init(config);
 
   // input buffers
-  depthImage[0].alloc(make_uint2(640, 480));
-  depthImage[1].alloc(make_uint2(640, 480));
+  depthImage.alloc(make_uint2(640, 480));
   rgbImage.alloc(make_uint2(640, 480));
 
   // render buffers
@@ -264,19 +335,22 @@ int main(int argc, char ** argv) {
   pos.alloc(make_uint2(640, 480)), normals.alloc(make_uint2(640, 480)), dep.alloc(make_uint2(640, 480)), texModel.alloc(make_uint2(640, 480));
 
   if(printCUDAError()) {
+    delete ptr_bag_filtered;
     cudaDeviceReset();
     return 1;
   }
 
-  memset(depthImage[0].data(), 0, depthImage[0].size.x*depthImage[0].size.y * sizeof(uint16_t));
-  memset(depthImage[1].data(), 0, depthImage[1].size.x*depthImage[1].size.y * sizeof(uint16_t));
+  memset(depthImage.data(), 0, depthImage.size.x*depthImage.size.y * sizeof(uint16_t));
   memset(rgbImage.data(), 0, rgbImage.size.x*rgbImage.size.y * sizeof(uchar3));
 
+  /*
   uint16_t * buffers[2] = {depthImage[0].data(), depthImage[1].data()};
+
   if(InitKinect(buffers, (unsigned char *)rgbImage.data())){
     cudaDeviceReset();
     return 1;
   }
+  */
 
   kfusion.setPose(toMatrix4(initPose));
 
@@ -291,9 +365,11 @@ int main(int argc, char ** argv) {
   glutReshapeFunc(reshape);
   glutIdleFunc(idle);
 
+  cout << "ready" << endl;
   glutMainLoop();
 
-  CloseKinect();
+  delete ptr_bag_filtered;
+  //CloseKinect();
 
   return 0;
 }

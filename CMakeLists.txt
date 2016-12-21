@@ -49,6 +49,10 @@ if (GLUT_FOUND)
     )
   target_link_libraries(kfusion_test kfusion ${GLUT_LIBRARIES} ${OPENGL_LIBRARIES})
 
+  # rosbag
+  add_executable(kfusion_rosbag kfusion_rosbag.cpp)
+  target_link_libraries(kfusion_rosbag kfusion pthread ${GLUT_LIBRARIES}
+    ${OPENGL_LIBRARIES} ${catkin_LIBRARIES})
 
 
   if(FREENECT_FOUND)
@@ -60,12 +64,6 @@ if (GLUT_FOUND)
       )
     target_link_libraries(kfusion_kinect kfusion pthread ${GLUT_LIBRARIES}
       ${OPENGL_LIBRARIES} ${FREENECT_LIBRARIES})
-
-    # rosbag
-    add_executable(kfusion_rosbag kfusion_rosbag.cpp interface.h interface.cpp)
-    target_link_libraries(kfusion_rosbag kfusion pthread ${GLUT_LIBRARIES}
-      ${OPENGL_LIBRARIES} ${FREENECT_LIBRARIES} ${catkin_LIBRARIES})
-
 
   else()
     include_directories($ENV{KINECTSDK10_DIR}/inc)
