@@ -39,10 +39,19 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include <rosbag/bag.h>
 
 #include <sensor_msgs/Image.h>
+#include <sensor_msgs/CompressedImage.h>
 
+#include <opencv2/highgui/highgui.hpp>
+#include <opencv2/imgproc/imgproc.hpp>
+#include <opencv/cvwimage.h>
+
+
+#include <cv_bridge/cv_bridge.h>
+#include <compressed_depth_image_transport/compression_common.h>
 
 using namespace std;
 using namespace TooN;
+
 
 KFusion kfusion;
 Image<uchar4, HostDevice> lightScene, trackModel, lightModel, texModel;
@@ -69,13 +78,129 @@ SE3<float> preTrans, trans, rot(makeVector(0.0, 0, 0, 0, 0, 0));
 bool redraw_big_view = false;
 
 
+// ros bag record jpeg compreseed images
+#define ROSBAG_COMPRESSED_IMAGE 1
+
 // ros bag
+#if ROSBAG_COMPRESSED_IMAGE
+const string rgb_img_topic = "/camera/rgb/image_color/compressed";
+const string depth_img_topic = "/camera/depth/image_raw/compressedDepth";
+#else
 const string rgb_img_topic = "/camera/rgb/image_color";
 const string depth_img_topic = "/camera/depth/image_raw";
+#endif
 rosbag::View *ptr_bag_filtered;
 rosbag::View::const_iterator iter_bag_frame;
 // flag of buffered depth frame has been processed
 bool depth_buffer_processed;
+
+
+
+// TODO: copy from compressed_depth_image_transport
+// cannot fix linking issue
+namespace compressed_depth_image_transport
+{
+sensor_msgs::Image::Ptr decodeCompressedDepthImage(const sensor_msgs::CompressedImage& message)
+{
+
+  cv_bridge::CvImagePtr cv_ptr(new cv_bridge::CvImage);
+
+  // Copy message header
+  cv_ptr->header = message.header;
+
+  // Assign image encoding
+  std::string image_encoding = message.format.substr(0, message.format.find(';'));
+  cv_ptr->encoding = image_encoding;
+
+  // Decode message data
+  if (message.data.size() > sizeof(ConfigHeader))
+  {
+
+    // Read compression type from stream
+    ConfigHeader compressionConfig;
+    memcpy(&compressionConfig, &message.data[0], sizeof(compressionConfig));
+
+    // Get compressed image data
+    const std::vector<uint8_t> imageData(message.data.begin() + sizeof(compressionConfig), message.data.end());
+
+    // Depth map decoding
+    float depthQuantA, depthQuantB;
+
+    // Read quantization parameters
+    depthQuantA = compressionConfig.depthParam[0];
+    depthQuantB = compressionConfig.depthParam[1];
+
+    if (sensor_msgs::image_encodings::bitDepth(image_encoding) == 32)
+    {
+      cv::Mat decompressed;
+      try
+      {
+        // Decode image data
+        decompressed = cv::imdecode(imageData, cv::IMREAD_UNCHANGED);
+      }
+      catch (cv::Exception& e)
+      {
+        //ROS_ERROR("%s", e.what());
+        return sensor_msgs::Image::Ptr();
+      }
+
+      size_t rows = decompressed.rows;
+      size_t cols = decompressed.cols;
+
+      if ((rows > 0) && (cols > 0))
+      {
+        cv_ptr->image = cv::Mat(rows, cols, CV_32FC1);
+
+        // Depth conversion
+        cv::MatIterator_<float> itDepthImg = cv_ptr->image.begin<float>(),
+                            itDepthImg_end = cv_ptr->image.end<float>();
+        cv::MatConstIterator_<unsigned short> itInvDepthImg = decompressed.begin<unsigned short>(),
+                                          itInvDepthImg_end = decompressed.end<unsigned short>();
+
+        for (; (itDepthImg != itDepthImg_end) && (itInvDepthImg != itInvDepthImg_end); ++itDepthImg, ++itInvDepthImg)
+        {
+          // check for NaN & max depth
+          if (*itInvDepthImg)
+          {
+            *itDepthImg = depthQuantA / ((float)*itInvDepthImg - depthQuantB);
+          }
+          else
+          {
+            *itDepthImg = std::numeric_limits<float>::quiet_NaN();
+          }
+        }
+
+        // Publish message to user callback
+        return cv_ptr->toImageMsg();
+      }
+    }
+    else
+    {
+      // Decode raw image
+      try
+      {
+        cv_ptr->image = cv::imdecode(imageData, CV_LOAD_IMAGE_UNCHANGED);
+      }
+      catch (cv::Exception& e)
+      {
+        //ROS_ERROR("%s", e.what());
+        return sensor_msgs::Image::Ptr();
+      }
+
+      size_t rows = cv_ptr->image.rows;
+      size_t cols = cv_ptr->image.cols;
+
+      if ((rows > 0) && (cols > 0))
+      {
+        // Publish message to user callback
+        return cv_ptr->toImageMsg();
+      }
+    }
+  }
+  return sensor_msgs::Image::Ptr();
+}
+}
+
 
 
 void idle(void){
@@ -85,6 +210,60 @@ void idle(void){
     // check wether iter reach the end
     if (iter_bag_frame != ptr_bag_filtered->end()) {
       const rosbag::MessageInstance& message = *iter_bag_frame;
+
+#if ROSBAG_COMPRESSED_IMAGE
+      sensor_msgs::CompressedImage::ConstPtr img_ptr = message.instantiate<sensor_msgs::CompressedImage>();
+      if (img_ptr != NULL) {
+
+        if (message.getTopic() == depth_img_topic) {
+          // depth image
+          cout << "in depth frame" << endl;
+          // convert to sensor msg Image
+          sensor_msgs::Image::Ptr decodec_img_ptr =
+              compressed_depth_image_transport::decodeCompressedDepthImage(*img_ptr);
+
+          // check image property 640 x 480 x uchar16 x 1
+          if (decodec_img_ptr->width == 640 && decodec_img_ptr->height == 480 &&
+              decodec_img_ptr->step == 1280) {
+
+            memcpy(depthImage.data(), &decodec_img_ptr->data[0],
+                decodec_img_ptr->step*decodec_img_ptr->height);
+
+            depth_buffer_processed = false;
+            // rerun display func (do fusion)
+            glutPostRedisplay();
+          } else {
+            cout << "decodec_img_ptr->width = " << decodec_img_ptr->width << endl;
+            cout << "decodec_img_ptr->height = " << decodec_img_ptr->height << endl;
+            cout << "decodec_img_ptr->step = " << decodec_img_ptr->step << endl;
+            cout << "[ERROR] depth image format wrong" << endl;
+          }
+
+        } else if (message.getTopic() == rgb_img_topic) {
+          // rgb image
+          cout << "in color frame" << endl;
+          // convert to opencv image
+          cv::Mat cvimg = cv::imdecode(cv::Mat(img_ptr->data), CV_LOAD_IMAGE_COLOR);
+
+          // check image property 640 x 480 x uchar16 x 1
+          if (cvimg.cols == 640 && cvimg.rows == 480 &&
+              cvimg.type() == CV_8UC3) {
+
+            memcpy(depthImage.data(), cvimg.data, cvimg.cols*cvimg.rows*3);
+
+          } else {
+            cout << "[ERROR] depth image format wrong" << endl;
+          }
+
+        } else {
+          //cout << "[ERROR] cannot identify Image topic type" << endl;
+        }
+
+      } else {
+        //cout << "[ERROR] cannot find message type" << endl;
+      }
+
+#else
       sensor_msgs::Image::ConstPtr img_ptr = message.instantiate<sensor_msgs::Image>();
       if (img_ptr != NULL) {
 
@@ -124,6 +303,7 @@ void idle(void){
       } else {
         //cout << "[ERROR] cannot find message type" << endl;
       }
+#endif
       iter_bag_frame++;
     }
 
@@ -268,7 +448,7 @@ void exitFunc(void){
 int main(int argc, char ** argv) {
 
   // load and filter rosbag file by topics
-  const string bagfile_name = "/home/jing/data/kinect/2016-12-20-23-00-19_0.bag";
+  const string bagfile_name = "/home/jing/data/kinect/2016-12-21-12-35-47_0.bag";
 
   rosbag::Bag bag;
   bag.open(bagfile_name, rosbag::bagmode::Read);
@@ -373,3 +553,5 @@ int main(int argc, char ** argv) {
 
   return 0;
 }
+
+

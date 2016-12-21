@@ -13,8 +13,12 @@ find_package(GLUT)
 find_package(catkin REQUIRED COMPONENTS
   sensor_msgs
   rosbag
+  cv_bridge
+  dynamic_reconfigure
+  image_transport
   )
 
+find_package(OpenCV REQUIRED)
 
 include_directories(
   ${CMAKE_BINARY_DIR}/include
@@ -51,8 +55,8 @@ if (GLUT_FOUND)
 
   # rosbag
   add_executable(kfusion_rosbag kfusion_rosbag.cpp)
-  target_link_libraries(kfusion_rosbag kfusion pthread ${GLUT_LIBRARIES}
-    ${OPENGL_LIBRARIES} ${catkin_LIBRARIES})
+  target_link_libraries(kfusion_rosbag kfusion pthread ${catkin_LIBRARIES}
+    ${GLUT_LIBRARIES} ${OPENGL_LIBRARIES} ${OpenCV_LIBRARIES})
 
 
   if(FREENECT_FOUND)
